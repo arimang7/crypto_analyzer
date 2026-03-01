@@ -1,0 +1,34 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+venv/
+.venv/
+env/
+ENV/
+
+# Streamlit
+.streamlit/config.toml
+! .streamlit/
+
+# IDEs
+.vscode/
+.idea/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+test_*.txt
+
+# Logs
+*.log
+trading/*.md
+! trading/README.md
+
+# OS files
+.DS_Store
+Thumbs.db

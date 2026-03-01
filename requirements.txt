@@ -1,0 +1,7 @@
+streamlit>=1.40.0
+plotly>=5.24.0
+yfinance>=0.2.50
+google-genai>=0.8.0
+google-auth>=2.0.0
+python-dotenv>=1.0.1
+pandas>=2.2.0
