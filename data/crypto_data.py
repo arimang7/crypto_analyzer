@@ -40,29 +40,30 @@ def get_crypto_list() -> dict:
 
 def get_ohlcv(ticker: str, interval: str = "1h", period: str = None) -> pd.DataFrame:
     """
-    Fetch OHLCV data from yfinance.
-    
-    Args:
-        ticker: Full ticker symbol (e.g. 'ETH-USD')
-        interval: Candle interval ('1m','5m','15m','1h','4h','1d')
-        period: Data period. If None, auto-selects based on interval.
-    
-    Returns:
-        DataFrame with columns: Open, High, Low, Close, Volume
+    Fetch OHLCV data from yfinance. Optimized for single ticker handling.
     """
     if period is None:
         period = INTERVAL_CONFIG.get(interval, {}).get("period", "30d")
     
     try:
-        df = yf.download(ticker, period=period, interval=interval, progress=False)
+        df = yf.download(ticker, period=period, interval=interval, progress=False, group_by="ticker")
         if df.empty:
             return pd.DataFrame()
         
-        # Flatten multi-level columns if present
+        # New yfinance versions return MultiIndex even for single tickers
+        # Structure often: (Price, Ticker) or (Ticker, Price)
         if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+            # Check if OHLCV columns are in level 0 or level 1
+            if all(col in df.columns.get_level_values(0) for col in ["Close", "High", "Low"]):
+                df.columns = df.columns.get_level_values(0)
+            else:
+                df.columns = df.columns.get_level_values(1)
         
-        return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+        # Ensure we only have the columns we want
+        desired = ["Open", "High", "Low", "Close", "Volume"]
+        available = [c for c in desired if c in df.columns]
+        
+        return df[available].dropna()
     except Exception as e:
         print(f"Error fetching data for {ticker}: {e}")
         return pd.DataFrame()
@@ -70,21 +71,28 @@ def get_ohlcv(ticker: str, interval: str = "1h", period: str = None) -> pd.DataF
 
 def get_ticker_stats(ticker: str) -> dict:
     """
-    Get 24h stats for a ticker.
-    
-    Returns:
-        dict with keys: price, high_24h, change_24h, change_pct, volume_24h, market_cap
+    Get 24h stats for a ticker. Uses fast_info for speed and robustness in cloud.
     """
     try:
         tk = yf.Ticker(ticker)
-        info = tk.info
         
-        price = info.get("regularMarketPrice", info.get("currentPrice", 0))
-        prev_close = info.get("regularMarketPreviousClose", info.get("previousClose", price))
-        high_24h = info.get("dayHigh", info.get("regularMarketDayHigh", 0))
-        volume_24h = info.get("volume24Hr", info.get("regularMarketVolume", 0))
-        market_cap = info.get("marketCap", 0)
+        # 1. Use fast_info - more reliable in Streamlit Cloud / blocked IPs
+        fi = tk.fast_info
+        price = fi.get("lastPrice", fi.get("last_price", 0))
+        prev_close = fi.get("previousClose", fi.get("previous_close", price))
+        high_24h = fi.get("dayHigh", fi.get("day_high", price))
+        volume_24h = fi.get("tenDayAverageDailyVolume", 0) # approximation if quoteVolume missing
+        market_cap = fi.get("marketCap", 0)
         
+        # 2. Fallback to info for missing/deprecated keys
+        if not price or price == 0:
+            info = tk.info
+            price = info.get("regularMarketPrice", info.get("currentPrice", 0))
+            prev_close = info.get("regularMarketPreviousClose", info.get("previousClose", price))
+            high_24h = info.get("dayHigh", info.get("regularMarketDayHigh", price))
+            volume_24h = info.get("volume24Hr", info.get("regularMarketVolume", volume_24h))
+            market_cap = info.get("marketCap", market_cap)
+
         change_24h = price - prev_close if prev_close else 0
         change_pct = (change_24h / prev_close * 100) if prev_close else 0
         
