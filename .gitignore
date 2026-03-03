@@ -32,3 +32,6 @@ trading/*.md
 # OS files
 .DS_Store
 Thumbs.db
+
+# Agent workflows
+.agent/
