@@ -76,50 +76,86 @@ def get_ohlcv(ticker: str, interval: str = "1h", period: str = None) -> pd.DataF
         return pd.DataFrame()
 
 
-def get_ticker_stats(ticker: str) -> dict:
+def _stats_from_ohlcv(ticker: str) -> dict:
     """
-    Get 24h stats for a ticker. Uses fast_info for speed and robustness in cloud.
+    Fallback: compute stats from 2-day daily OHLCV (works in cloud where fast_info/info may be blocked).
     """
     try:
+        df = yf.download(ticker, period="2d", interval="1d", progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            lv1 = df.columns.get_level_values(1).tolist()
+            lv0 = df.columns.get_level_values(0).tolist()
+            df.columns = df.columns.get_level_values(1) if any(c in lv1 for c in ["Close","High","Volume"]) \
+                         else df.columns.get_level_values(0)
+        df = df.dropna()
+        if df.empty:
+            return {}
+        price     = float(df["Close"].iloc[-1])
+        high_24h  = float(df["High"].iloc[-1])
+        volume_24h = float(df["Volume"].iloc[-1])
+        prev_close = float(df["Close"].iloc[-2]) if len(df) >= 2 else price
+        change_24h = price - prev_close
+        change_pct = (change_24h / prev_close * 100) if prev_close else 0
+        return {
+            "price": price, "high_24h": high_24h,
+            "change_24h": change_24h, "change_pct": change_pct,
+            "volume_24h": volume_24h, "market_cap": 0,
+        }
+    except Exception as e:
+        print(f"OHLCV fallback also failed for {ticker}: {e}")
+        return {}
+
+
+def get_ticker_stats(ticker: str) -> dict:
+    """
+    Get 24h stats for a ticker.
+    Priority: fast_info → ticker.info → OHLCV-based fallback (cloud-safe).
+    """
+    _empty = {"price": 0, "high_24h": 0, "change_24h": 0,
+              "change_pct": 0, "volume_24h": 0, "market_cap": 0}
+    try:
         tk = yf.Ticker(ticker)
-        
-        # 1. Use fast_info — attributes are snake_case in yfinance >= 0.2.x
+
+        # 1. fast_info (fastest, sometimes unavailable in cloud)
         fi = tk.fast_info
-        price = getattr(fi, "last_price", None) or 0
+        price      = getattr(fi, "last_price", None) or 0
         prev_close = getattr(fi, "previous_close", None) or 0
-        high_24h = getattr(fi, "day_high", None) or 0
-        volume_24h = getattr(fi, "last_volume", None) or getattr(fi, "three_month_average_volume", None) or 0
+        high_24h   = getattr(fi, "day_high", None) or 0
+        volume_24h = getattr(fi, "last_volume", None) or \
+                     getattr(fi, "three_month_average_volume", None) or 0
         market_cap = getattr(fi, "market_cap", None) or 0
-        
-        # 2. Fallback to info if fast_info returned nothing useful
-        if not price or price == 0:
+
+        # 2. ticker.info fallback
+        if not price:
             try:
-                info = tk.info
-                price = info.get("regularMarketPrice", info.get("currentPrice", 0)) or 0
+                info       = tk.info
+                price      = info.get("regularMarketPrice", info.get("currentPrice", 0)) or 0
                 prev_close = info.get("regularMarketPreviousClose", info.get("previousClose", price)) or 0
-                high_24h = info.get("dayHigh", info.get("regularMarketDayHigh", price)) or 0
+                high_24h   = info.get("dayHigh", info.get("regularMarketDayHigh", price)) or 0
                 volume_24h = info.get("volume24Hr", info.get("regularMarketVolume", volume_24h)) or 0
                 market_cap = info.get("marketCap", market_cap) or 0
             except Exception as e2:
-                print(f"Fallback info also failed for {ticker}: {e2}")
+                print(f"ticker.info failed for {ticker}: {e2}")
+
+        # 3. OHLCV-based fallback (always works where OHLCV download is available)
+        if not price:
+            fallback = _stats_from_ohlcv(ticker)
+            if fallback:
+                return fallback
 
         change_24h = price - prev_close if prev_close else 0
         change_pct = (change_24h / prev_close * 100) if prev_close else 0
-        
+
         return {
-            "price": price,
-            "high_24h": high_24h,
-            "change_24h": change_24h,
-            "change_pct": change_pct,
-            "volume_24h": volume_24h,
-            "market_cap": market_cap,
+            "price": price, "high_24h": high_24h,
+            "change_24h": change_24h, "change_pct": change_pct,
+            "volume_24h": volume_24h, "market_cap": market_cap,
         }
     except Exception as e:
-        print(f"Error fetching stats for {ticker}: {e}")
-        return {
-            "price": 0, "high_24h": 0, "change_24h": 0,
-            "change_pct": 0, "volume_24h": 0, "market_cap": 0,
-        }
+        print(f"get_ticker_stats error for {ticker}: {e}")
+        # Last resort — OHLCV fallback
+        fallback = _stats_from_ohlcv(ticker)
+        return fallback if fallback else _empty
 
 
 def compute_sma(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
