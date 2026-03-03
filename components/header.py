@@ -13,7 +13,6 @@ def render_header(selected_symbol: str, stats: dict):
     change_24h = stats.get("change_24h", 0)
     change_pct = stats.get("change_pct", 0)
     volume_24h = stats.get("volume_24h", 0)
-    market_cap = stats.get("market_cap", 0)
 
     change_class = "positive" if change_24h >= 0 else "negative"
     change_sign = "+" if change_24h >= 0 else ""
@@ -21,26 +20,22 @@ def render_header(selected_symbol: str, stats: dict):
     header_html = f"""
     <div class="stats-bar">
         <div class="stat-item">
-            <div class="stat-label">마크가격</div>
-            <div class="stat-value">${price:,.1f}</div>
+            <div class="stat-label">현재가</div>
+            <div class="stat-value">${price:,.2f}</div>
         </div>
         <div class="stat-item">
-            <div class="stat-label">오라클가</div>
-            <div class="stat-value">${price:,.1f}</div>
+            <div class="stat-label">고가 (24H)</div>
+            <div class="stat-value">${high_24h:,.2f}</div>
         </div>
         <div class="stat-item">
             <div class="stat-label">24시간 변동</div>
             <div class="stat-value {change_class}">
-                {change_sign}${abs(change_24h):,.1f} / {change_sign}{change_pct:.2f}%
+                {change_sign}${abs(change_24h):,.2f} / {change_sign}{change_pct:.2f}%
             </div>
         </div>
         <div class="stat-item">
-            <div class="stat-label">24시간 거래량</div>
-            <div class="stat-value">{format_number(volume_24h)}</div>
-        </div>
-        <div class="stat-item">
-            <div class="stat-label">미청산 계약수</div>
-            <div class="stat-value">{format_number(market_cap)}</div>
+            <div class="stat-label">거래량 (24H)</div>
+            <div class="stat-value">{format_number(volume_24h, prefix="")}</div>
         </div>
     </div>
     """

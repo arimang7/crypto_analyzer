@@ -50,18 +50,25 @@ def get_ohlcv(ticker: str, interval: str = "1h", period: str = None) -> pd.DataF
         if df.empty:
             return pd.DataFrame()
         
-        # New yfinance versions return MultiIndex even for single tickers
-        # Structure often: (Price, Ticker) or (Ticker, Price)
+        # yfinance >= 0.2.x returns MultiIndex (Ticker, Price) for single ticker too
+        # e.g. MultiIndex([('ETH-USD', 'Open'), ('ETH-USD', 'High'), ...], names=['Ticker', 'Price'])
         if isinstance(df.columns, pd.MultiIndex):
-            # Check if OHLCV columns are in level 0 or level 1
-            if all(col in df.columns.get_level_values(0) for col in ["Close", "High", "Low"]):
-                df.columns = df.columns.get_level_values(0)
-            else:
+            level0 = df.columns.get_level_values(0).tolist()
+            level1 = df.columns.get_level_values(1).tolist()
+            ohlcv = ["Open", "High", "Low", "Close", "Volume"]
+            # Level 1 contains OHLCV names → use level 1
+            if any(col in level1 for col in ohlcv):
                 df.columns = df.columns.get_level_values(1)
+            # Level 0 contains OHLCV names → use level 0
+            elif any(col in level0 for col in ohlcv):
+                df.columns = df.columns.get_level_values(0)
         
         # Ensure we only have the columns we want
         desired = ["Open", "High", "Low", "Close", "Volume"]
         available = [c for c in desired if c in df.columns]
+        if not available:
+            print(f"Warning: No OHLCV columns found. Columns were: {df.columns.tolist()}")
+            return pd.DataFrame()
         
         return df[available].dropna()
     except Exception as e:
@@ -76,22 +83,25 @@ def get_ticker_stats(ticker: str) -> dict:
     try:
         tk = yf.Ticker(ticker)
         
-        # 1. Use fast_info - more reliable in Streamlit Cloud / blocked IPs
+        # 1. Use fast_info — attributes are snake_case in yfinance >= 0.2.x
         fi = tk.fast_info
-        price = fi.get("lastPrice", fi.get("last_price", 0))
-        prev_close = fi.get("previousClose", fi.get("previous_close", price))
-        high_24h = fi.get("dayHigh", fi.get("day_high", price))
-        volume_24h = fi.get("tenDayAverageDailyVolume", 0) # approximation if quoteVolume missing
-        market_cap = fi.get("marketCap", 0)
+        price = getattr(fi, "last_price", None) or 0
+        prev_close = getattr(fi, "previous_close", None) or 0
+        high_24h = getattr(fi, "day_high", None) or 0
+        volume_24h = getattr(fi, "last_volume", None) or getattr(fi, "three_month_average_volume", None) or 0
+        market_cap = getattr(fi, "market_cap", None) or 0
         
-        # 2. Fallback to info for missing/deprecated keys
+        # 2. Fallback to info if fast_info returned nothing useful
         if not price or price == 0:
-            info = tk.info
-            price = info.get("regularMarketPrice", info.get("currentPrice", 0))
-            prev_close = info.get("regularMarketPreviousClose", info.get("previousClose", price))
-            high_24h = info.get("dayHigh", info.get("regularMarketDayHigh", price))
-            volume_24h = info.get("volume24Hr", info.get("regularMarketVolume", volume_24h))
-            market_cap = info.get("marketCap", market_cap)
+            try:
+                info = tk.info
+                price = info.get("regularMarketPrice", info.get("currentPrice", 0)) or 0
+                prev_close = info.get("regularMarketPreviousClose", info.get("previousClose", price)) or 0
+                high_24h = info.get("dayHigh", info.get("regularMarketDayHigh", price)) or 0
+                volume_24h = info.get("volume24Hr", info.get("regularMarketVolume", volume_24h)) or 0
+                market_cap = info.get("marketCap", market_cap) or 0
+            except Exception as e2:
+                print(f"Fallback info also failed for {ticker}: {e2}")
 
         change_24h = price - prev_close if prev_close else 0
         change_pct = (change_24h / prev_close * 100) if prev_close else 0
