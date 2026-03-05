@@ -12,6 +12,15 @@ from google.genai import types
 from data.crypto_data import format_number
 from data.gemini_config import get_client, get_model_id
 
+# Available Gemini models for the chatbot dropdown
+GEMINI_MODELS = {
+    "⚡ gemini-flash-latest": "gemini-flash-latest",
+    "✨ gemini-2.5-flash": "gemini-2.5-flash",
+    "🚀 gemini-3-flash-preview": "gemini-3-flash-preview",
+    "💨 gemini-2.5-flash-lite": "gemini-2.5-flash-lite",
+    "🔬 gemini-3.1-flash-lite-preview": "gemini-3.1-flash-lite-preview",
+}
+
 SYSTEM_PROMPT = """당신은 전문적인 암호화폐 투자 상담사입니다. 
 다음 원칙을 따르세요:
 
@@ -26,16 +35,32 @@ SYSTEM_PROMPT = """당신은 전문적인 암호화폐 투자 상담사입니다
 
 def render_chatbot(ticker: str = "", stats: dict = None, df: pd.DataFrame = None):
     """Render the Gemini-powered chatbot interface with streaming and timer."""
-    st.markdown(
-        """
-        <div style="font-size:16px; font-weight:700; color:#d1d4dc; 
-                    padding:8px 0; margin-bottom:8px; 
-                    border-bottom: 1px solid #2a2e39;">
-            💬 AI 투자 상담
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # --- Header row: title + model selector ---
+    if "chatbot_model" not in st.session_state:
+        st.session_state.chatbot_model = list(GEMINI_MODELS.keys())[0]
+
+    header_col, model_col = st.columns([2, 2])
+    with header_col:
+        st.markdown(
+            """
+            <div style="font-size:16px; font-weight:700; color:#d1d4dc;
+                        padding:8px 0; margin-bottom:8px;
+                        border-bottom: 1px solid #2a2e39;">
+                💬 AI 투자 상담
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with model_col:
+        selected_label = st.selectbox(
+            "모델 선택",
+            options=list(GEMINI_MODELS.keys()),
+            index=list(GEMINI_MODELS.keys()).index(st.session_state.chatbot_model),
+            key="chatbot_model_selector",
+            label_visibility="collapsed",
+        )
+        if selected_label != st.session_state.chatbot_model:
+            st.session_state.chatbot_model = selected_label
 
     # Show current price context badge
     if stats and stats.get("price"):
@@ -81,7 +106,8 @@ def render_chatbot(ticker: str = "", stats: dict = None, df: pd.DataFrame = None
         # Show streaming response if currently generating
         if st.session_state.get("chat_generating"):
             with st.chat_message("assistant"):
-                _stream_response(ticker, stats, df)
+                model_id = GEMINI_MODELS[st.session_state.chatbot_model]
+                _stream_response(ticker, stats, df, model_id)
             st.session_state["chat_generating"] = False
             st.rerun()
 
@@ -92,7 +118,7 @@ def render_chatbot(ticker: str = "", stats: dict = None, df: pd.DataFrame = None
         st.rerun()
 
 
-def _stream_response(ticker: str, stats: dict, df: pd.DataFrame):
+def _stream_response(ticker: str, stats: dict, df: pd.DataFrame, model_id: str = None):
     """Stream the Gemini response using the new SDK."""
     prompt = st.session_state.chat_messages[-1]["content"]
     market_context = _build_market_context(ticker, stats, df)
@@ -106,7 +132,8 @@ def _stream_response(ticker: str, stats: dict, df: pd.DataFrame):
             st.error("AI 클라이언트를 초기화할 수 없습니다.")
             return
 
-        model_id = get_model_id()
+        if not model_id:
+            model_id = get_model_id()
         
         # Prepare history for the new SDK
         history = []
