@@ -75,6 +75,34 @@ def _render_signal_cards(signals: list[dict]):
         conf_color = {"High": "#26a69a", "Medium": "#ff9800", "Low": "#ef5350"}.get(confidence, "#787b86")
 
         extra_rows = []
+        
+        # Calculate Risk/Reward Ratio Score (0 ~ 100)
+        score_html = ""
+        if entry > 0 and tp > 0 and sl > 0:
+            reward = abs(tp - entry)
+            risk = abs(sl - entry)
+            if risk > 0:
+                ratio = reward / risk
+                # Map ratio to 0-100 score: 
+                # Ratio of 1.0 (1:1) -> 50, Ratio of 2.0 (1:2) -> 75, Ratio near 0 -> 0
+                score = min(100, int((ratio / (ratio + 1)) * 100))
+            else:
+                score = 100 if reward > 0 else 0
+                ratio = float('inf')
+            
+            score_color = "#26a69a" if score >= 60 else "#ff9800" if score >= 40 else "#ef5350"
+            score_html = f"""
+            <div style="margin-top:12px; margin-bottom:4px;">
+                <div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:4px;">
+                    <span style="color:#787b86;">손익비 점수 (R/R: {ratio:.1f})</span>
+                    <strong style="color:{score_color};">{score}점</strong>
+                </div>
+                <div style="width:100%; height:4px; background:rgba(255,255,255,0.1); border-radius:2px; overflow:hidden;">
+                    <div style="width:{score}%; height:100%; background:{score_color}; border-radius:2px;"></div>
+                </div>
+            </div>
+            """
+
         if pattern:
             extra_rows.append(f'<div style="color:#787b86;">🔷 패턴: <b style="color:#d1d4dc;">{pattern}</b></div>')
         if rsi_analysis:
@@ -85,8 +113,11 @@ def _render_signal_cards(signals: list[dict]):
             extra_rows.append(f'<div style="color:#9e9e9e; margin-top:4px; line-height:1.4;">{reasoning}</div>')
 
         extra_html = ""
-        if extra_rows:
-            extra_html = '<div style="margin-top:8px; padding-top:8px; border-top:1px solid #2a2e39; font-size:11px;">' + "".join(extra_rows) + '</div>'
+        if extra_rows or score_html:
+            extra_html = '<div style="margin-top:8px; padding-top:8px; border-top:1px solid #2a2e39; font-size:11px;">'
+            if score_html:
+                extra_html += score_html + '<div style="margin-bottom:8px;"></div>'
+            extra_html += "".join(extra_rows) + '</div>'
 
         card_html = f"""
         <div class="signal-card" style="background:{dir_bg}; border-color:{dir_color}40;">

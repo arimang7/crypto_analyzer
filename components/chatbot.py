@@ -5,6 +5,7 @@ Uses streaming response with a unified architecture for Vertex and Google AI.
 
 import os
 import time
+import concurrent.futures
 import streamlit as st
 import pandas as pd
 from google import genai
@@ -33,13 +34,86 @@ SYSTEM_PROMPT = """당신은 전문적인 암호화폐 투자 상담사입니다
 """
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _check_model_health() -> dict:
+    """Ping all models to check latency and availability concurrently."""
+    client = get_client()
+    if not client:
+        return {name: {"elapsed": float('inf'), "status": "🔴 Error", "model_id": m_id} for name, m_id in GEMINI_MODELS.items()}
+        
+    def ping_model(model_name: str, model_id: str):
+        try:
+            start = time.time()
+            # Send a minimal prompt to measure response time
+            client.models.generate_content(
+                model=model_id,
+                contents="ping",
+                config=types.GenerateContentConfig(max_output_tokens=5, temperature=0.0)
+            )
+            elapsed = time.time() - start
+            if elapsed < 1.0:
+                status = "🟢 쾌적"
+            elif elapsed < 3.0:
+                status = "🟡 보통"
+            else:
+                status = "🟠 지연"
+            return model_name, elapsed, status
+        except Exception as e:
+            return model_name, float('inf'), "🔴 혼잡"
+
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(GEMINI_MODELS)) as executor:
+        futures = {executor.submit(ping_model, name, m_id): name for name, m_id in GEMINI_MODELS.items()}
+        for future in concurrent.futures.as_completed(futures):
+            name = futures[future]
+            try:
+                name_ret, elapsed, status = future.result()
+            except Exception:
+                name_ret, elapsed, status = name, float('inf'), "🔴 혼잡"
+            results[name_ret] = {"elapsed": elapsed, "status": status, "model_id": GEMINI_MODELS[name_ret]}
+            
+    return results
+
+
 def render_chatbot(ticker: str = "", stats: dict = None, df: pd.DataFrame = None):
     """Render the Gemini-powered chatbot interface with streaming and timer."""
-    # --- Header row: title + model selector ---
-    if "chatbot_model" not in st.session_state:
-        st.session_state.chatbot_model = list(GEMINI_MODELS.keys())[0]
+    # --- Check model health and rebuild options ---
+    health_status = _check_model_health()
+    
+    options = []
+    option_mapping = {}
+    best_label = None
+    best_elapsed = float('inf')
 
-    header_col, model_col = st.columns([2, 2])
+    # Ensure stable ordering
+    for original_name in GEMINI_MODELS.keys():
+        info = health_status.get(original_name)
+        if not info:
+            info = {"elapsed": float('inf'), "status": "🔴 Error", "model_id": GEMINI_MODELS[original_name]}
+            
+        elapsed = info["elapsed"]
+        status = info["status"]
+        m_id = info["model_id"]
+        
+        if elapsed != float('inf'):
+            label = f"{original_name} ({status}, {elapsed:.1f}초)"
+            if elapsed < best_elapsed:
+                best_elapsed = elapsed
+                best_label = label
+        else:
+            label = f"{original_name} ({status})"
+            
+        options.append(label)
+        option_mapping[label] = m_id
+
+    if not best_label and options:
+        best_label = options[0]
+
+    if "chatbot_model_label" not in st.session_state:
+        st.session_state.chatbot_model_label = best_label
+
+    # --- Header row: title + model selector ---
+    header_col, model_col = st.columns([1, 2])
     with header_col:
         st.markdown(
             """
@@ -52,15 +126,19 @@ def render_chatbot(ticker: str = "", stats: dict = None, df: pd.DataFrame = None
             unsafe_allow_html=True,
         )
     with model_col:
+        current_idx = 0
+        if st.session_state.chatbot_model_label in options:
+            current_idx = options.index(st.session_state.chatbot_model_label)
+            
         selected_label = st.selectbox(
             "모델 선택",
-            options=list(GEMINI_MODELS.keys()),
-            index=list(GEMINI_MODELS.keys()).index(st.session_state.chatbot_model),
+            options=options,
+            index=current_idx,
             key="chatbot_model_selector",
             label_visibility="collapsed",
         )
-        if selected_label != st.session_state.chatbot_model:
-            st.session_state.chatbot_model = selected_label
+        if selected_label != st.session_state.chatbot_model_label:
+            st.session_state.chatbot_model_label = selected_label
 
     # Show current price context badge
     if stats and stats.get("price"):
@@ -106,7 +184,7 @@ def render_chatbot(ticker: str = "", stats: dict = None, df: pd.DataFrame = None
         # Show streaming response if currently generating
         if st.session_state.get("chat_generating"):
             with st.chat_message("assistant"):
-                model_id = GEMINI_MODELS[st.session_state.chatbot_model]
+                model_id = option_mapping.get(st.session_state.chatbot_model_label, list(option_mapping.values())[0])
                 _stream_response(ticker, stats, df, model_id)
             st.session_state["chat_generating"] = False
             st.rerun()
@@ -119,11 +197,27 @@ def render_chatbot(ticker: str = "", stats: dict = None, df: pd.DataFrame = None
 
 
 def _stream_response(ticker: str, stats: dict, df: pd.DataFrame, model_id: str = None):
-    """Stream the Gemini response using the new SDK."""
+    """Stream the Gemini response using the new SDK with step-by-step elapsed times."""
     prompt = st.session_state.chat_messages[-1]["content"]
-    market_context = _build_market_context(ticker, stats, df)
+    
+    status_container = st.empty()
+    status_container.markdown(
+        f"<div style='font-size:12px; color:#787b86; padding:8px 0;'>⏳ <b>데이터 수집 중...</b></div>", 
+        unsafe_allow_html=True
+    )
     
     start_time = time.time()
+    market_context = _build_market_context(ticker, stats, df)
+    context_time = time.time()
+    t_context = context_time - start_time
+    
+    status_container.markdown(
+        f"<div style='font-size:12px; color:#787b86; padding:8px 0;'>"
+        f"✅ <b>수집 완료</b> ({t_context:.1f}초) ➔ ⏳ <b>{model_id} 생각 중...</b>"
+        f"</div>", 
+        unsafe_allow_html=True
+    )
+
     full_response = ""
 
     try:
@@ -152,17 +246,34 @@ def _stream_response(ticker: str, stats: dict, df: pd.DataFrame, model_id: str =
         # Create chat session and stream
         chat = client.chats.create(model=model_id, history=history, config=config)
         
+        first_chunk = True
+        t_first_byte = 0
+        
         for chunk in chat.send_message_stream(prompt):
-            if chunk.text:
-                full_response += chunk.text
-                elapsed = time.time() - start_time
-                response_placeholder.markdown(
-                    full_response + f"\n\n<sub style='color:#787b86;'>⏱ {elapsed:.1f}초</sub>",
+            if first_chunk:
+                t_first_byte = time.time() - context_time
+                status_container.markdown(
+                    f"<div style='font-size:12px; color:#787b86; padding:8px 0;'>"
+                    f"✅ <b>수집</b> ({t_context:.1f}초) ➔ ✅ <b>반응</b> ({t_first_byte:.1f}초) ➔ ⏳ <b>작성 중...</b>"
+                    f"</div>",
                     unsafe_allow_html=True,
                 )
+                first_chunk = False
 
-        elapsed = time.time() - start_time
-        response_placeholder.markdown(full_response)
+            if chunk.text:
+                full_response += chunk.text
+                response_placeholder.markdown(full_response)
+
+        elapsed_total = time.time() - start_time
+        t_generation = elapsed_total - t_context - t_first_byte
+        
+        # Final status update
+        status_container.markdown(
+            f"<div style='font-size:12px; color:#26a69a; padding:8px 0;'>"
+            f"✅ <b>수집</b> ({t_context:.1f}초) ➔ ✅ <b>반응</b> ({t_first_byte:.1f}초) ➔ ✅ <b>작성</b> ({t_generation:.1f}초) — <b>총 {elapsed_total:.1f}초</b>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
 
         st.session_state.chat_messages.append(
             {"role": "assistant", "content": full_response}
